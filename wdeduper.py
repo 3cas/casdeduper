@@ -35,7 +35,7 @@ def save_settings():
 def main():
     os.chdir(os.path.dirname(__file__))
 
-    for scan_path in ["wdeduper", "wdeduper/scans", "wdeduper/moved"]:
+    for scan_path in ["wdeduper", "wdeduper/scans", "wdeduper/moved", "wdeduper/lists"]:
         scan_path = os.path.join(*scan_path.split("/"))
         if not os.path.exists(scan_path):
             os.mkdir(scan_path)
@@ -70,12 +70,15 @@ def do_scan():
         if not scan_path:
             scan_path = os.path.expanduser("~")
         
+        if scan_path[:2] == "~/":
+            scan_path = os.path.join(os.path.expanduser("~"), scan_path.replace("~/", ""))
+
         if os.path.isdir(scan_path):
             break
         else:
             print("That's not a directory! Please try again (or ctrl+c to quit).")
 
-    input(f"Ready! Press enter to start scanning '{scan_path}'... (or ctrl+c to quit)\n")
+    input(f"Ready! Press enter to start scanning '{scan_path}' (or ctrl+c to quit)\n")
 
     print("Creating database...")
 
@@ -88,7 +91,7 @@ def do_scan():
 
     cur.execute("CREATE TABLE keeps (path TEXT NOT NULL, size INTEGER NOT NULL, time INTEGER NOT NULL)")
     cur.execute("CREATE TABLE dupes (path TEXT NOT NULL, size INTEGER NOT NULL, time INTEGER NOT NULL, hash TEXT NOT NULL, original_path TEXT NOT NULL, original_time INTEGER NOT NULL)")
-    cur.execute("CREATE TABLE data (scan_path TEXT NOT NULL)")
+    cur.execute("CREATE TABLE data (scan_path TEXT NOT NULL, scanned_at TEXT NOT NULL)")
     cur.execute("INSERT INTO data (scan_path, scanned_at) VALUES (?, ?)", (scan_path, scanned_at))
 
     print("Scanning files...")
@@ -122,7 +125,7 @@ def do_scan():
     print(f"Scan complete! Scanned {count} files total, including {skips} skips.")
     if skips: print("NOTE: Skips are caused by insufficient read permissions OR files smaller than the specified minimum sizes. These can usually be ignored since important system files should not be deduped.")
 
-    print("Now looking for duplicate file sizes, and cleaning database...")
+    print("\nNow looking for duplicate file sizes, and cleaning database...")
 
     all_files = cur.execute("SELECT size, time FROM keeps").fetchall()
 
@@ -141,7 +144,7 @@ def do_scan():
             
             size_matches = cur.execute("SELECT path, time FROM keeps WHERE size = ? ORDER BY time ASC", (size,)).fetchall()
             if len(size_matches) > 1:
-                print(f"~ Found {len(size_matches)} files of {size} bytes, now checking hashes")
+                #print(f"~ Found {len(size_matches)} files of {size} bytes, now checking hashes")
                 
                 by_hash = {}
 
@@ -172,9 +175,13 @@ def do_scan():
     con.close()
 
     print(f"All done! Found {dupes} duplicate files (this number includes each duplicate, but not the originals).")
-    input("Press enter for options.")
-    
-    take_action(db_path)
+        
+    if dupes > 0:
+        input("Press enter for options.")
+        take_action(db_path)
+
+    else:
+        print("Since there aren't any, not doing anything. Bye!")
 
 
 def take_action(db_path):
@@ -184,11 +191,11 @@ def take_action(db_path):
     scan_path, scanned_at = cur.execute("SELECT scan_path, scanned_at FROM data").fetchone()
     duplicates = cur.execute("SELECT path FROM dupes").fetchall()
 
-    option, index = pick(["move them all into one folder", "view a list of all files", "DELETE them forever", "quit"], f"What would you like to do with these {duplicates} duplicate files?", ">")
+    option, index = pick(["move them all into one folder", "export a list of all files", "DELETE them forever", "quit"], f"What would you like to do with these {len(duplicates)} duplicate files?", ">")
 
     if index == 0:
         move_to = os.path.join("wdeduper", "moved", "moved_"+scanned_at)
-        input(f"Okay, this operation will move all the files into {move_to}. Press enter to continue or ctrl+c to quit.")
+        input(f"Okay, this operation will move all {len(duplicates)} files into {move_to}. Press enter to continue or ctrl+c to quit.")
         os.mkdir(move_to)
 
         for path, in duplicates:
@@ -199,7 +206,44 @@ def take_action(db_path):
 
             os.rename(path, os.path.join(move_to, tail))
 
-        ........... WIP!
+        print(f"Done! {len(os.listdir(move_to))} files have been moved.")
+
+    elif index == 1:
+        listing_file = os.path.join("wdeduper", "lists", "list_"+scanned_at+".txt")
+        with open(listing_file, "w") as f:
+            f.write("\n".join([path for path, in duplicates]))
+
+        print(f"Saved all file paths to a text document at {listing_file}.")
+
+    elif index == 2:
+        print(f"You shouldn't use this option unless you really want to. It is much better to move all the files first using the 'move' option than to use the delete option. If you really want to delete, type 'Yes, I want to delete {len(duplicates)} files.'")
+        check = input(" > ")
+        if check == f"Yes, I want to delete {len(duplicates)} files.":
+            for path, in duplicates:
+                os.remove(path)
+        else:
+            print("Then I won't do it!")
+
+    elif index == 3:
+        close()
+
+
+def view_scans():
+    scans = os.listdir(os.path.join("wdeduper", "scans"))
+    if scans:
+        scan, index = pick(scans, "Which scan do you want to view/delete/etc?", ">")
+        take_action(os.path.join("wdeduper", "scans", scan))
+    else:
+        print("There are no past scans!")
+
+
+def settings_menu():
+    print("There is no settings menu yet.")
+
+
+def close():
+    print("Thank you for using wDeduper.")
+
 
 if __name__ == "__main__":
     main()
