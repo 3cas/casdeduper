@@ -2,10 +2,9 @@ from datetime import datetime
 from pick import pick
 import hashlib
 import sqlite3
+import random
+import json
 import os
-
-
-UPDATE_FREQUENCY = 1000
 
 
 MSG_WELCOME = """
@@ -19,36 +18,55 @@ MSG_WELCOME = """
 Welcome to wDeduper! Please select an option below.   
 """
 
+SETTINGS_FILE = os.path.join("wdeduper", "settings.json")
+
+DEFAULT_SETTINGS = {
+    "update_frequency": 1000,
+    "min_size": 1000000
+}
+
+
+def save_settings():
+    global settings
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
+
 
 def main():
     os.chdir(os.path.dirname(__file__))
 
-    for scan_path in ["wdeduper", "wdeduper/scans"]:
+    for scan_path in ["wdeduper", "wdeduper/scans", "wdeduper/moved"]:
         scan_path = os.path.join(*scan_path.split("/"))
         if not os.path.exists(scan_path):
             os.mkdir(scan_path)
 
-    options = ["scan files"]
-    options.append(f"view past scans ({len(os.listdir(os.path.join('wdeduper', 'scans')))})")
-    options.append("quit")
+    global settings
+    if os.path.isfile(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            settings = json.load(f)
+    else:
+        settings = DEFAULT_SETTINGS
+        save_settings()
 
-    option, index = pick(options, MSG_WELCOME, ">")
+    options = {
+        "scan files": do_scan, 
+        f"view past scans ({len(os.listdir(os.path.join('wdeduper', 'scans')))})": view_scans, 
+        "settings": settings_menu, 
+        "quit": close,
+    }
+    
+    option, index = pick(list(options.keys()), MSG_WELCOME, ">")
 
     print(MSG_WELCOME)
     print("...\n")
 
-    if index == 0:
-        do_scan()
-    elif index == 1:
-        return
-    else:
-        return
+    options[option]()
 
 
 def do_scan():
     print("Please enter the path of the directory you want to scan (default is ~)")
     while True:
-        scan_path = input("> path: ")
+        scan_path = input(" > ")
         if not scan_path:
             scan_path = os.path.expanduser("~")
         
@@ -61,8 +79,8 @@ def do_scan():
 
     print("Creating database...")
 
-    time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    db_file = "scan_"+time+".db"
+    scanned_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    db_file = "scan_"+scanned_at+".db"
     db_path = os.path.join("wdeduper", "scans", db_file)
 
     con = sqlite3.connect(db_path)
@@ -70,6 +88,8 @@ def do_scan():
 
     cur.execute("CREATE TABLE keeps (path TEXT NOT NULL, size INTEGER NOT NULL, time INTEGER NOT NULL)")
     cur.execute("CREATE TABLE dupes (path TEXT NOT NULL, size INTEGER NOT NULL, time INTEGER NOT NULL, hash TEXT NOT NULL, original_path TEXT NOT NULL, original_time INTEGER NOT NULL)")
+    cur.execute("CREATE TABLE data (scan_path TEXT NOT NULL)")
+    cur.execute("INSERT INTO data (scan_path, scanned_at) VALUES (?, ?)", (scan_path, scanned_at))
 
     print("Scanning files...")
 
@@ -88,23 +108,19 @@ def do_scan():
                 skips += 1
             
             else:
-                cur.execute("INSERT INTO keeps (path, size, time) VALUES (?, ?, ?)", (filepath, stats.st_size, stats.st_mtime))
+                if stats.st_size > settings["min_size"]:
+                    cur.execute("INSERT INTO keeps (path, size, time) VALUES (?, ?, ?)", (filepath, stats.st_size, stats.st_mtime))
+                else:
+                    skips += 1
 
-            if count % UPDATE_FREQUENCY == 0:
+            if count % settings["update_frequency"] == 0:
                 con.commit()
                 print(f"~ Scanned {count} files so far, including {skips} skips. Still scanning...")
 
     con.commit()
-    con.close()
+
     print(f"Scan complete! Scanned {count} files total, including {skips} skips.")
-    if skips: print("NOTE: Skips are caused by insufficient read permissions. These can usually be ignored since important system files should not be deduped.")
-
-    find_dupes(db_path)
-
-
-def find_dupes(db_path: str):
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
+    if skips: print("NOTE: Skips are caused by insufficient read permissions OR files smaller than the specified minimum sizes. These can usually be ignored since important system files should not be deduped.")
 
     print("Now looking for duplicate file sizes, and cleaning database...")
 
@@ -153,7 +169,37 @@ def find_dupes(db_path: str):
                 nondupes += 1
 
     con.commit()
+    con.close()
 
+    print(f"All done! Found {dupes} duplicate files (this number includes each duplicate, but not the originals).")
+    input("Press enter for options.")
+    
+    take_action(db_path)
+
+
+def take_action(db_path):
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+
+    scan_path, scanned_at = cur.execute("SELECT scan_path, scanned_at FROM data").fetchone()
+    duplicates = cur.execute("SELECT path FROM dupes").fetchall()
+
+    option, index = pick(["move them all into one folder", "view a list of all files", "DELETE them forever", "quit"], f"What would you like to do with these {duplicates} duplicate files?", ">")
+
+    if index == 0:
+        move_to = os.path.join("wdeduper", "moved", "moved_"+scanned_at)
+        input(f"Okay, this operation will move all the files into {move_to}. Press enter to continue or ctrl+c to quit.")
+        os.mkdir(move_to)
+
+        for path, in duplicates:
+            head, tail = os.path.split(path)
+
+            if os.path.isfile(os.path.join(move_to, tail)):
+                tail += "_" + str(random.randint(100000, 999999))
+
+            os.rename(path, os.path.join(move_to, tail))
+
+        ........... WIP!
 
 if __name__ == "__main__":
     main()
